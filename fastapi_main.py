@@ -1265,6 +1265,74 @@ def sample_test(digit: int):
     file_path = f"my_samples/{digit}.wav"
     return generate_result_html(file_path, f"samples/{digit}.wav")
 
+# ---------- JSON API (consumed by the Node/Vercel frontend) ----------
+import base64
+import tempfile
+from pydantic import BaseModel
+from fastapi.responses import JSONResponse
+
+DIGIT_WORDS = ["zero","one","two","three","four","five","six","seven","eight","nine"]
+GREEK_NAMES = ["Init","Alpha","Beta","Gamma","Delta","Epsln","Zeta","Eta","Theta","Iota"]
+
+EXT_MAP = {
+    "webm": ".webm", "ogg": ".ogg", "wav": ".wav", "wave": ".wav",
+    "x-wav": ".wav", "mpeg": ".mp3", "mp3": ".mp3", "mp4": ".m4a", "m4a": ".m4a",
+}
+
+def ext_from_mime(mime_type: str) -> str:
+    mt = (mime_type or "").lower()
+    for key, ext in EXT_MAP.items():
+        if key in mt:
+            return ext
+    return ".wav"
+
+class RecognizeRequest(BaseModel):
+    audio: str
+    mimeType: str = "audio/wav"
+
+@app.post("/api/recognize")
+async def api_recognize(req: RecognizeRequest):
+    tmp_path = None
+    try:
+        audio_bytes = base64.b64decode(req.audio)
+        ext = ext_from_mime(req.mimeType)
+        with tempfile.NamedTemporaryFile(suffix=ext, delete=False) as tmp:
+            tmp.write(audio_bytes)
+            tmp_path = tmp.name
+
+        predicted_class, confidence, _ = predict_logic(tmp_path)
+
+        return {
+            "digit": predicted_class,
+            "english": DIGIT_WORDS[predicted_class],
+            "greek": GREEK_NAMES[predicted_class],
+            "confidence": round(confidence / 100.0, 4),
+            "analysis": f"Mel-spectrogram CNN: digit {predicted_class} detected at {confidence:.1f}% confidence.",
+            "isMock": False,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    finally:
+        if tmp_path and os.path.exists(tmp_path):
+            os.remove(tmp_path)
+
+
+@app.get("/api/sample/{digit}")
+async def api_sample(digit: int):
+    try:
+        file_path = f"my_samples/{digit}.wav"
+        predicted_class, confidence, _ = predict_logic(file_path)
+        return {
+            "digit": predicted_class,
+            "english": DIGIT_WORDS[predicted_class],
+            "greek": GREEK_NAMES[predicted_class],
+            "confidence": round(confidence / 100.0, 4),
+            "analysis": f"Sample {digit}.wav: model predicted {predicted_class} at {confidence:.1f}% confidence.",
+            "isMock": False,
+        }
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+
 # ---------- RUN ----------
 if __name__ == "__main__":
     uvicorn.run(app, host="127.0.0.1", port=8000)
